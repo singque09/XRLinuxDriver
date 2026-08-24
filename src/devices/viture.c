@@ -69,7 +69,7 @@ static const float viture_pitch_adjustments[VITURE_MODEL_COUNT] = {
     -8.5, // Luma Pro
     -8.5, // Luma Ultra
     -8.5, // Luma Cyber
-    7.0   // Beast
+    7.5   // Beast
 };
 static const float viture_fovs[VITURE_MODEL_COUNT] = {
     40.0, // One

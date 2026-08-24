@@ -91,6 +91,14 @@ bool driver_reference_pose(imu_pose_type* out_pose, bool* pose_updated) {
     return false;
 }
 
+static float get_pitch_adjustment_degrees(device_properties_type* device, driver_config_type *config) {
+    float device_pitch_adjustment = device != NULL ? device->pitch_adjustment_degrees : 0.0f;
+    float new_pitch_adjustment = config->use_pitch_adjustment_override ? config->pitch_adjustment_degrees : device_pitch_adjustment;
+    if (config->debug_device) log_debug("get_pitch_adjustment_degrees: %f\n", new_pitch_adjustment);
+    return new_pitch_adjustment;
+}
+
+static float desired_pitch_adjustment_degrees = NAN;
 void driver_handle_pose(imu_pose_type pose) {
     // counter that resets every second, for triggering things that we don't want to do every cycle
     static int imu_counter = 0;
@@ -103,11 +111,14 @@ void driver_handle_pose(imu_pose_type pose) {
     if (is_driver_connected() && device != NULL) {
         if (imu_rate_observe_pose(device)) init_multi_tap(device->imu_cycles_per_s);
 
-        if (device->pitch_adjustment_degrees != cached_pitch_adjustment_degrees) {
-            cached_pitch_adjustment_degrees = device->pitch_adjustment_degrees;
+        if (isnan(desired_pitch_adjustment_degrees)) {
+            desired_pitch_adjustment_degrees = get_pitch_adjustment_degrees(device, config());
+        }
+        if (desired_pitch_adjustment_degrees != cached_pitch_adjustment_degrees) {
+            cached_pitch_adjustment_degrees = desired_pitch_adjustment_degrees;
             pitch_adjustment_quat = device_pitch_adjustment(cached_pitch_adjustment_degrees);
         }
-        if (pose.has_orientation && device->pitch_adjustment_degrees != 0.0f) 
+        if (pose.has_orientation && cached_pitch_adjustment_degrees != 0.0f) 
             pose.orientation = multiply_quaternions(pose.orientation, pitch_adjustment_quat);
 
         if (config()->debug_device && imu_counter == 0 && pose.has_orientation)
@@ -379,6 +390,23 @@ void update_config_from_file(FILE *fp) {
         log_message("VR-Lite roll axis has been enabled\n");
     if (config()->use_roll_axis && !new_config->use_roll_axis)
         log_message("VR-Lite roll axis has been disabled\n");
+
+    bool update_pitch_adjustment = false;
+    if (config()->use_pitch_adjustment_override != new_config->use_pitch_adjustment_override) {
+        log_message("Pitch adjustment override has been %s\n", new_config->use_pitch_adjustment_override ? "enabled" : "disabled");
+        update_pitch_adjustment = true;
+    }
+
+    if (new_config->use_pitch_adjustment_override && config()->pitch_adjustment_degrees != new_config->pitch_adjustment_degrees) {
+        log_message("Pitch adjustment has been changed to %f degrees\n", new_config->pitch_adjustment_degrees);
+        update_pitch_adjustment = true;
+    }
+
+    if (update_pitch_adjustment) {
+        device_properties_type *device = device_checkout();
+        desired_pitch_adjustment_degrees = get_pitch_adjustment_degrees(device, new_config);
+        device_checkin(device);
+    }
 
     if (config()->mouse_sensitivity != new_config->mouse_sensitivity)
         log_message("Mouse sensitivity has changed to %d\n", new_config->mouse_sensitivity);

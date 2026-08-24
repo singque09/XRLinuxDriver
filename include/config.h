@@ -14,6 +14,8 @@ struct driver_config_t {
     bool invert_z;
     bool vr_lite_invert_x;
     bool vr_lite_invert_y;
+    bool use_pitch_adjustment_override;
+    float pitch_adjustment_degrees;
     int mouse_sensitivity;
     char *output_mode;
     bool multi_tap_enabled;

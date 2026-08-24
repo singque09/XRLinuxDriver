@@ -50,7 +50,6 @@ breezy_desktop_config *bd_config;
 
 void breezy_desktop_reset_config(breezy_desktop_config *config) {
     config->enabled = false;
-    config->look_ahead_override = 0.0;
     config->display_distance = 1.0;
     config->display_size = 1.0;
     config->sbs_content = false;

@@ -4,7 +4,6 @@
 
 struct breezy_desktop_config_t {
     bool enabled;
-    float look_ahead_override;
     float display_distance;
     float display_size;
     bool sbs_content;

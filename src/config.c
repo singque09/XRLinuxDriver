@@ -30,6 +30,8 @@ driver_config_type *default_config() {
     config->invert_z = false;
     config->vr_lite_invert_x = false;
     config->vr_lite_invert_y = false;
+    config->use_pitch_adjustment_override = false;
+    config->pitch_adjustment_degrees = 0.0f;
     config->mouse_sensitivity = 30;
     config->output_mode = strdup(mouse_output_mode);
     config->multi_tap_enabled = false;
@@ -132,6 +134,10 @@ driver_config_type* parse_config_file(FILE *fp) {
             boolean_config(key, value, &config->vr_lite_invert_x);
         } else if (equal(key, "vr_lite_invert_y")) {
             boolean_config(key, value, &config->vr_lite_invert_y);
+        } else if (equal(key, "use_pitch_adjustment_override")) {
+            boolean_config(key, value, &config->use_pitch_adjustment_override);
+        } else if (equal(key, "pitch_adjustment_degrees")) {
+            float_config(key, value, &config->pitch_adjustment_degrees);
         } else if (equal(key, "mouse_sensitivity")) {
             int_config(key, value, &config->mouse_sensitivity);
         } else if (equal(key, "output_mode")) {
