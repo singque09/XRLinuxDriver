@@ -3,6 +3,7 @@
 #include "plugins.h"
 
 #define SIDEVIEW_POSITION_COUNT 9
+#define SIDEVIEW_POSITION_MIDDLE_CENTER "middle_center"
 extern const char *sideview_position_names[SIDEVIEW_POSITION_COUNT];
 
 struct sideview_ipc_values_t {

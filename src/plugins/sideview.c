@@ -16,8 +16,8 @@ const char *sideview_position_names[SIDEVIEW_POSITION_COUNT] = {
     "top_right",
     "bottom_left",
     "bottom_right",
-    "middle_center",
-	"middle_left",
+    SIDEVIEW_POSITION_MIDDLE_CENTER,
+    "middle_left",
     "top_center",
     "middle_right",
     "bottom_center"
@@ -39,8 +39,12 @@ void sideview_handle_config_line_func(void* config, char* key, char* value) {
     if (equal(key, "external_mode")) {
         temp_config->enabled = list_string_contains("sideview", value);
     } else if (equal(key, "sideview_position")) {
+        bool is_value_legacy_center = equal(value, "center");
         for (int i = 0; i < SIDEVIEW_POSITION_COUNT; i++) {
-            if (equal(value, sideview_position_names[i])) {
+            bool is_index_middle_center = 
+                equal(sideview_position_names[i], SIDEVIEW_POSITION_MIDDLE_CENTER);
+            if (equal(value, sideview_position_names[i]) || 
+                is_value_legacy_center && is_index_middle_center) {
                 temp_config->position = i;
                 return;
             }
