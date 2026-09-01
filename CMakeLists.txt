@@ -210,7 +210,7 @@ endif()
 
 # RayNeo is dlopen'd rather than linked, so it has no imported target to drive DEVICE_MAPPINGS
 if(EXISTS ${RAYNEO_LIB})
-    list(APPEND SOURCES src/devices/rayneo.c)
+    list(APPEND SOURCES src/devices/rayneo.c src/devices/rayneo_imu_bridge.c)
     add_definitions(-DRAYNEOXRMINISDK_SUPPORTED)
     message(STATUS "RayNeo support enabled, added src/devices/rayneo.c")
 endif()
@@ -284,3 +284,49 @@ target_link_libraries(xrDriver
 # though nothing in LIB_DIR is linked directly any more
 set_target_properties(xrDriver PROPERTIES BUILD_RPATH "${LIB_DIR}")
 add_dependencies(xrDriver run_python_script)
+
+enable_testing()
+add_executable(rayneo_fusion_bridge_test
+    tests/rayneo_fusion_bridge_test.c
+    src/devices/rayneo_imu_bridge.c
+)
+target_include_directories(rayneo_fusion_bridge_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/xrDeviceKit/include
+)
+target_link_libraries(rayneo_fusion_bridge_test PRIVATE
+    xrDeviceKit
+    Fusion
+    ${JSONC_LIBRARIES}
+    m
+    Threads::Threads
+)
+add_test(NAME rayneo_fusion_bridge_test COMMAND rayneo_fusion_bridge_test)
+
+add_executable(rayneo_fusion_still_test
+    tests/rayneo_fusion_still_test.c
+    src/devices/rayneo_imu_bridge.c
+    src/imu.c
+)
+target_include_directories(rayneo_fusion_still_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/xrDeviceKit/include
+)
+target_link_libraries(rayneo_fusion_still_test PRIVATE
+    xrDeviceKit
+    Fusion
+    ${JSONC_LIBRARIES}
+    m
+    Threads::Threads
+)
+add_test(NAME rayneo_fusion_still_test COMMAND rayneo_fusion_still_test)
+
+add_executable(imu_still_hold_test
+    tests/imu_still_hold_test.c
+    src/imu.c
+)
+target_include_directories(imu_still_hold_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(imu_still_hold_test PRIVATE m)
+add_test(NAME imu_still_hold_test COMMAND imu_still_hold_test)

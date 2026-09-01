@@ -45,6 +45,17 @@ imu_quat_type normalize_quaternion(imu_quat_type q);
 imu_quat_type conjugate(imu_quat_type q);
 imu_quat_type multiply_quaternions(imu_quat_type q1, imu_quat_type q2);
 imu_quat_type quaternion_eus_to_nwu(imu_quat_type q);
+
+typedef struct {
+    imu_quat_type held;
+    uint32_t still_run;
+    bool holding;
+    bool held_valid;
+} imu_still_hold_type;
+
+void imu_still_hold_reset(imu_still_hold_type* st);
+imu_quat_type imu_still_hold_update(imu_still_hold_type* st, imu_quat_type live, float excess_dps,
+                                    float enter_dps, float exit_dps, uint32_t enter_samples);
 imu_quat_type euler_to_quaternion_xyz(imu_euler_type euler);
 imu_quat_type euler_to_quaternion_zyx(imu_euler_type euler);
 imu_quat_type euler_to_quaternion_zxy(imu_euler_type euler);

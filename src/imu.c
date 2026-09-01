@@ -61,6 +61,50 @@ imu_quat_type quaternion_eus_to_nwu(imu_quat_type q) {
     return (imu_quat_type){.w = q.w, .x = -q.z, .y = -q.x, .z = q.y};
 }
 
+void imu_still_hold_reset(imu_still_hold_type* st) {
+    if (!st) return;
+    *st = (imu_still_hold_type){
+        .held = { .w = 1.0f, .x = 0.0f, .y = 0.0f, .z = 0.0f },
+        .still_run = 0,
+        .holding = false,
+        .held_valid = false,
+    };
+}
+
+imu_quat_type imu_still_hold_update(imu_still_hold_type* st, imu_quat_type live, float excess_dps,
+                                    float enter_dps, float exit_dps, uint32_t enter_samples) {
+    if (!st) return live;
+
+    if (!st->held_valid) {
+        st->held = live;
+        st->held_valid = true;
+    }
+
+    if (st->holding) {
+        if (excess_dps > exit_dps) {
+            st->holding = false;
+            st->still_run = 0;
+            st->held = live;
+            return live;
+        }
+        return st->held;
+    }
+
+    if (excess_dps < enter_dps) {
+        st->still_run++;
+        if (enter_samples > 0 && st->still_run >= enter_samples) {
+            st->holding = true;
+            st->held = live;
+            return st->held;
+        }
+        return live;
+    }
+
+    st->still_run = 0;
+    st->held = live;
+    return live;
+}
+
 imu_quat_type euler_to_quaternion_xyz(imu_euler_type euler) {
     // Convert degrees to radians
     float roll = degree_to_radian(euler.roll);

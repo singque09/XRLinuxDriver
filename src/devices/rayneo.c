@@ -1,6 +1,8 @@
 #include "devices.h"
 #include "devices/rayneo.h"
+#include "devices/rayneo_imu_bridge.h"
 #include "connection_pool.h"
+#include "device_imu.h"
 #include "driver.h"
 #include "imu.h"
 #include "logging.h"
@@ -10,6 +12,7 @@
 #include "sdks/rayneo.h"
 #include "strings.h"
 
+#include <ctype.h>
 #include <dlfcn.h>
 #include <math.h>
 #include <pthread.h>
@@ -134,21 +137,116 @@ static bool hard_connected = false;
 static bool soft_connected = false;
 
 static bool is_sbs_mode = false;
-void rayneo_imu_callback(const float acc[3], const float gyro[3], const float mag[3], uint64_t timestamp){
-    if (!soft_connected || driver_disabled()) return;
 
-    uint32_t ts = (uint32_t) (timestamp / TS_TO_MS_FACTOR);
-    float rotation[4];
-    float position[3];
-    uint64_t time;
-    GetHeadTrackerPose(rotation, position, &time);
+static device_imu_type rayneo_fusion_imu;
+static bool rayneo_fusion_open = false;
+static pthread_t rayneo_cal_thread;
+static bool rayneo_cal_thread_started = false;
+static imu_still_hold_type rayneo_still_hold;
 
-    imu_quat_type imu_quat = { .w = rotation[3], .x = rotation[0], .y = rotation[1], .z = rotation[2] };
+static void rayneo_pose_hold_reset(void) {
+    imu_still_hold_reset(&rayneo_still_hold);
+}
+
+static imu_quat_type rayneo_sdk_head_quat(void) {
+    float rotation[4] = {0};
+    float position[3] = {0};
+    uint64_t time_ns = 0;
+    GetHeadTrackerPose(rotation, position, &time_ns);
+    return (imu_quat_type){ .w = rotation[3], .x = rotation[0], .y = rotation[1], .z = rotation[2] };
+}
+
+static void* rayneo_calibrate_thread(void* arg) {
+    (void)arg;
+    device_imu_error_type err = rayneo_imu_bridge_run_still_calibration(&rayneo_fusion_imu);
+    if (err != DEVICE_IMU_ERROR_NO_ERROR && err != DEVICE_IMU_ERROR_UNPLUGGED) {
+        log_error("RayNeo driver, still calibration failed (%d)\n", err);
+    } else if (config()->debug_device && err == DEVICE_IMU_ERROR_NO_ERROR) {
+        log_debug("RayNeo driver, still calibration complete (mag %s)\n",
+                  rayneo_imu_bridge_mag_is_live() ? "live" : "dead");
+    }
+    return NULL;
+}
+
+static void rayneo_fusion_event(uint64_t timestamp, device_imu_event_type event,
+                                const device_imu_ahrs_type* ahrs) {
+    (void)ahrs;
+    if (event != DEVICE_IMU_EVENT_UPDATE || !soft_connected || driver_disabled()) return;
+    if (!GetHeadTrackerPose) return;
+
+    // GetHeadTrackerPose is the look-mapping the wearer confirmed. Fusion remaps
+    // (and a one-sample lock onto it) send pitch/yaw to the wrong axes during motion.
+    // Hold that SDK pose while the still-cal gyro mean says the head is parked.
+    imu_quat_type sdk_nwu = quaternion_eus_to_nwu(rayneo_sdk_head_quat());
+    float excess = rayneo_imu_bridge_gyro_excess_dps();
     imu_pose_type pose = (imu_pose_type){0};
-    pose.orientation = quaternion_eus_to_nwu(imu_quat);
+    pose.orientation = imu_still_hold_update(
+        &rayneo_still_hold, sdk_nwu, excess,
+        RAYNEO_STILL_HOLD_ENTER_DPS, RAYNEO_STILL_HOLD_EXIT_DPS, RAYNEO_STILL_HOLD_ENTER_SAMPLES);
     pose.has_orientation = true;
-    pose.timestamp_ms = ts;
+    pose.timestamp_ms = (uint32_t)(timestamp / TS_TO_MS_FACTOR);
     connection_pool_ingest_pose(RAYNEO_DRIVER_ID, pose);
+}
+
+static bool rayneo_fusion_start_locked(void) {
+    if (rayneo_fusion_open) return true;
+
+    if (!rayneo_imu_bridge_attach(&rayneo_fusion_imu)) {
+        log_error("RayNeo driver, failed to attach IMU fusion bridge\n");
+        return false;
+    }
+
+    device_imu_error_type err = device_imu_open(&rayneo_fusion_imu, rayneo_fusion_event);
+    if (err != DEVICE_IMU_ERROR_NO_ERROR) {
+        log_error("RayNeo driver, device_imu_open failed for fusion bridge (%d)\n", err);
+        device_imu_close(&rayneo_fusion_imu);
+        return false;
+    }
+
+    rayneo_pose_hold_reset();
+    rayneo_imu_bridge_set_calibrating(true);
+    rayneo_fusion_open = true;
+    if (pthread_create(&rayneo_cal_thread, NULL, rayneo_calibrate_thread, NULL) != 0) {
+        log_error("RayNeo driver, failed to start still-calibration thread\n");
+        rayneo_fusion_open = false;
+        rayneo_imu_bridge_set_calibrating(false);
+        device_imu_close(&rayneo_fusion_imu);
+        return false;
+    }
+    rayneo_cal_thread_started = true;
+    if (config()->debug_device) {
+        log_debug("RayNeo driver, IMU fusion bridge started\n");
+    }
+    return true;
+}
+
+static void rayneo_fusion_stop_locked(void) {
+    if (!rayneo_fusion_open && !rayneo_cal_thread_started) return;
+
+    rayneo_imu_bridge_request_stop();
+    if (rayneo_cal_thread_started) {
+        pthread_join(rayneo_cal_thread, NULL);
+        rayneo_cal_thread_started = false;
+    }
+
+    if (!rayneo_fusion_open) return;
+
+    device_imu_close(&rayneo_fusion_imu);
+    rayneo_fusion_open = false;
+    rayneo_pose_hold_reset();
+    rayneo_imu_bridge_reset();
+    if (config()->debug_device) {
+        log_debug("RayNeo driver, IMU fusion bridge stopped\n");
+    }
+}
+
+void rayneo_imu_callback(const float acc[3], const float gyro[3], const float mag[3], uint64_t timestamp){
+    if (!soft_connected || driver_disabled() || !rayneo_fusion_open) return;
+
+    rayneo_imu_bridge_enqueue(acc, gyro, mag, timestamp);
+    if (!rayneo_imu_bridge_is_calibrating()) {
+        device_imu_read(&rayneo_fusion_imu, 0);
+    }
 }
 
 static pthread_mutex_t device_name_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -167,24 +265,34 @@ static void rayneo_mcu_callback(uint32_t state, uint64_t timestamp, size_t lengt
 
             bool device_found = false;
             if (strlen(device_type) > 0) {
-                char device_type_copy[64];
-                strncpy(device_type_copy, device_type, sizeof(device_type_copy) - 1);
-                device_type_copy[sizeof(device_type_copy) - 1] = '\0';
-                
-                char* brand_part = strtok(device_type_copy, " ");
-                char* model_part = strtok(NULL, " ");
-                if (brand_part && model_part && strlen(brand_part) > 0 && strlen(model_part) > 0) {
-                    device_brand = strdup(brand_part);
-                    char* version_part = strtok(NULL, " ");
-                    if (version_part && strlen(version_part) > 0) {
-                        device_model = malloc(strlen(model_part) + strlen(version_part) + 2);
-                        if (device_model) {
-                            sprintf(device_model, "%s %s", model_part, version_part);
-                            device_found = true;
+                char compact[64];
+                size_t compact_n = 0;
+                for (const unsigned char* p = (const unsigned char*)device_type;
+                     *p && compact_n + 1 < sizeof(compact); p++) {
+                    if (*p == ' ' || *p == '-' || *p == '_' || *p == '/') continue;
+                    compact[compact_n++] = (char)tolower(*p);
+                }
+                compact[compact_n] = '\0';
+
+                if (strstr(compact, "air4pro") != NULL) {
+                    device_brand = strdup("RayNeo");
+                    device_model = strdup("Air 4 Pro");
+                    device_found = (device_brand != NULL && device_model != NULL);
+                } else {
+                    char device_type_copy[64];
+                    strncpy(device_type_copy, device_type, sizeof(device_type_copy) - 1);
+                    device_type_copy[sizeof(device_type_copy) - 1] = '\0';
+
+                    char* space = strchr(device_type_copy, ' ');
+                    if (space) {
+                        *space = '\0';
+                        char* model_part = space + 1;
+                        while (*model_part == ' ') model_part++;
+                        if (strlen(device_type_copy) > 0 && strlen(model_part) > 0) {
+                            device_brand = strdup(device_type_copy);
+                            device_model = strdup(model_part);
+                            device_found = (device_brand != NULL && device_model != NULL);
                         }
-                    } else {
-                        device_model = strdup(model_part);
-                        device_found = true;
                     }
                 }
             }
@@ -213,11 +321,23 @@ bool rayneo_device_connect() {
         if (hard_connected) {
             StartXR();
             OpenIMU();
-            
-            soft_connected = true;
+            if (!rayneo_fusion_start_locked()) {
+                log_error("RayNeo driver, IMU fusion bridge failed; leaving device unsupported\n");
+                CloseIMU();
+                StopXR();
+                NotifyDeviceDisconnected();
+                ResetUsbConnection();
+                UnregisterIMUEventCallback(rayneo_imu_callback);
+                UnregisterStateEventCallback(rayneo_mcu_callback);
+                free_and_clear(&device_brand);
+                free_and_clear(&device_model);
+                hard_connected = false;
+            } else {
+                soft_connected = true;
 
-            // this will trigger the STATE_EVENT_DEVICE_INFO event
-            AcquireDeviceInfo();
+                // this will trigger the STATE_EVENT_DEVICE_INFO event
+                AcquireDeviceInfo();
+            }
         } else {
             log_message("RayNeo driver, failed to establish a connection\n");
         }
@@ -232,6 +352,7 @@ void rayneo_device_disconnect(bool soft, bool is_device_present) {
     if (soft_connected) {
         CloseIMU();
         StopXR();
+        rayneo_fusion_stop_locked();
         soft_connected = false;
     }
 
@@ -283,7 +404,17 @@ device_properties_type* rayneo_supported_device(uint16_t vendor_id, uint16_t pro
 void rayneo_block_on_device() {
     device_properties_type* device = device_checkout();
     bool imu_started = false;
-    if (soft_connected && device != NULL) imu_started = wait_for_imu_start();
+    if (soft_connected && device != NULL) {
+        // Still-cal holds device_imu_read, so no poses flow until it finishes.
+        // wait_for_imu_start() only retries 5s and would disconnect otherwise.
+        int cal_wait_s = 0;
+        while (soft_connected && rayneo_imu_bridge_is_calibrating() &&
+               cal_wait_s < RAYNEO_STILL_CAL_WAIT_S + 15) {
+            sleep(1);
+            cal_wait_s++;
+        }
+        imu_started = wait_for_imu_start();
+    }
     while (soft_connected && device != NULL && imu_started && is_imu_alive()) {
         sleep(1);
     }
