@@ -30,7 +30,6 @@
 imu_buffer_type *imu_buffer;
 
 static int last_imu_checkpoint_ms = 0;
-static imu_quat_type last_imu_checkpoint_quat = {.x = 0.0f, .y = 0.0f, .z = 0.0f, .w = 1.0f};
 static uint64_t last_healthy_imu_timestamp_ms = 0;
 
 // Cached perceptual threshold for when tiny orientation changes become effectively invisible.
@@ -381,6 +380,7 @@ static void _init_outputs() {
 
 static void _deinit_outputs() {
     last_imu_checkpoint_ms = 0;
+    last_healthy_imu_timestamp_ms = 0;
     dead_zone_cached_device_visible_angle_rad = -1.0f;
     dead_zone_cached_threshold_visible_angle_rad = -1.0f;
     if (uinput) {
@@ -427,17 +427,11 @@ void handle_imu_update(imu_pose_type pose, imu_euler_type velocities, bool imu_c
     // counter that resets every second, for triggering things that we don't want to do every cycle
     static int imu_counter = 0;
 
-    // periodically run checks to keep an eye on the health of the IMU
+    // Sample timestamps are the liveness signal. Still-hold publishes identical
+    // quats on purpose; treating that as a dead IMU reconnects and recalibrates.
     if (pose.timestamp_ms - last_imu_checkpoint_ms > IMU_CHECKPOINT_MS) {
         last_imu_checkpoint_ms = pose.timestamp_ms;
-
-        // in practice, no two quats will be exactly equal even if the glasses are stationary
-        if (!quat_equal(pose.orientation, last_imu_checkpoint_quat)) {
-            last_healthy_imu_timestamp_ms = get_epoch_time_ms();
-            last_imu_checkpoint_quat = pose.orientation;
-        } else if (config()->debug_device) {
-            log_debug("handle_imu_update, device failed health check\n");
-        }
+        last_healthy_imu_timestamp_ms = get_epoch_time_ms();
     }
 
     device_properties_type* device = device_checkout();
